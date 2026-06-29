@@ -1,27 +1,28 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Dashboard from './pages/dashboard';
 import Login from './pages/login';
-import Register from './pages/register';
-
-
-// Note: Sidebar dan StatCard biasanya dipanggil di dalam komponen Page 
-// atau di dalam sebuah Layout component.
+import ProtectedRoute from './ProtectedRoute'; // <-- 1. Import ProtectedRoute
 
 function App() {
-
     return (
         <Router>
             <Routes>
                 {/* Halaman Publik */}
-                <Route path="/register" element={<Register />} />
-
                 <Route path="/login" element={<Login />} />
 
-                {/* Halaman Terproteksi */}
-                <Route path="/dashboard" element={<Dashboard />} />
+                {/* Halaman Terproteksi (Hanya bisa diakses jika sudah login) */}
+                <Route 
+                    path="/dashboard" 
+                    element={
+                        <ProtectedRoute>
+                            <Dashboard />
+                        </ProtectedRoute>
+                    } 
+                />
 
                 {/* Redirect jika route tidak ditemukan */}
-                <Route path="*" element={<Navigate to="/register" replace />} />
+                {/* Bagus juga jika diarahkan ke /login sebagai default landing */}
+                <Route path="*" element={<Navigate to="/login" replace />} />
             </Routes>
         </Router>
     );

@@ -1,34 +1,38 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, Leaf, Recycle } from "lucide-react";
 import { auth, provider } from "../firebase";
 import { signInWithPopup } from "firebase/auth";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 
 export default function Login() {
     const navigate = useNavigate();
 
-    const [showPassword, setShowPassword] = useState(false);
 
+    const [showPassword, setShowPassword] = useState(false);
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [fullName, setFullName] = useState('');
+
+    // 1. SATU STATE UTAMA (Hapus state email, password, fullName terpisah yang di atas)
     const [formData, setFormData] = useState({
+        fullName: "",
         email: "",
         password: "",
     });
 
+    // 2. FUNGSI HANDLER (Sudah benar, tinggal dipakai)
     const handleChange = (e) => {
         setFormData({
             ...formData,
-            [e.target.name]: e.target.value,
+            [e.target.name]: e.target.value, // Ini mendeteksi atribut 'name' pada tag <input>
         });
     };
 
     const handleSubmit = (e) => {
         e.preventDefault();
-
-        console.log(formData);
-
-        // Login berhasil (contoh)
-        navigate("/dashboard");
+        console.log("Data yang dikirim:", formData);
     };
 
     const handleGoogleLogin = async () => {
@@ -39,6 +43,82 @@ export default function Login() {
         } catch (error) {
             console.error(error);
         }
+    };
+
+    const handleLoginSubmit = async (e) => {
+        e.preventDefault();
+
+        if (!formData.email || !formData.password) {
+            alert("Email dan password wajib diisi!");
+            return;
+        }
+
+        try {
+            console.log("Mencoba login...");
+
+            // 2. LANGKAH PERTAMA: Coba login dulu
+            const userCredential = await signInWithEmailAndPassword(
+                auth,
+                formData.email,
+                formData.password
+            );
+
+            console.log("Login Sukses (Akun Lama):", userCredential.user.email);
+            navigate('/dashboard');
+
+        } catch (error) {
+            // 3. LANGKAH KEDUA: Jika gagal karena akun belum terdaftar, otomatis buatkan akun baru
+            if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+                console.log("Akun tidak ditemukan. Membuat akun baru di Firebase...");
+
+                try {
+                    const newUserCredential = await createUserWithEmailAndPassword(
+                        auth,
+                        formData.email,
+                        formData.password
+                    );
+
+                    console.log("Pendaftaran Otomatis Sukses (Akun Baru):", newUserCredential.user.email);
+                    alert("Akun baru berhasil dibuat otomatis! Mengalihkan ke dashboard...");
+                    navigate('/dashboard');
+
+                } catch (registerError) {
+                    console.error("Gagal membuat akun otomatis:", registerError);
+                    // Menangani error pembuatan akun (misal: password kurang dari 6 karakter)
+                    if (registerError.code === 'auth/weak-password') {
+                        alert('Gagal membuat akun otomatis: Password minimal harus 6 karakter.');
+                    } else {
+                        alert('Gagal membuat akun baru: ' + registerError.message);
+                    }
+                }
+            } else {
+                // Menangani error login selain karena akun tidak ditemukan (misal: salah format email)
+                console.error("Proses login error:", error);
+                if (error.code === 'auth/invalid-email') {
+                    alert('Format email tidak valid.');
+                } else {
+                    alert('Gagal masuk: ' + error.message);
+                }
+            }
+        }
+    };
+
+    // 1. State untuk menyimpan status checkbox (default: false)
+    const [rememberMe, setRememberMe] = useState(false);
+
+    // 2. Mengambil data dari localStorage saat halaman pertama kali dimuat (Opsional tapi direkomendasikan)
+    useEffect(() => {
+        const savedRememberMe = localStorage.getItem('rememberMe') === 'true';
+        setRememberMe(savedRememberMe);
+    }, []);
+
+    // 3. Fungsi untuk menangani perubahan saat checkbox diklik
+    const handleRememberMeChange = (e) => {
+        const isChecked = e.target.checked;
+        setRememberMe(isChecked);
+
+        // Simpan ke localStorage agar browser "ingat" statusnya
+        localStorage.setItem('rememberMe', isChecked);
     };
 
     return (
@@ -99,9 +179,26 @@ export default function Login() {
                     </p>
 
                     <form
-                        onSubmit={handleSubmit}
+                        onSubmit={handleLoginSubmit}
                         className="mt-10 space-y-6"
                     >
+
+                        <div>
+                            <label className="block mb-2 text-slate-600 font-medium">
+                                Nama Lengkap
+                            </label>
+
+                            <input
+                                type="text"
+                                name="fullName"
+                                value={formData.fullName}
+                                placeholder="Nama Lengkap"
+                                onChange={handleChange}
+                                required
+                                className="w-full rounded-xl border border-slate-300 px-5 py-3 focus:outline-none focus:ring-2 focus:ring-green-500"
+                            />
+                        </div>
+
                         <div>
                             <label className="block mb-2 text-slate-600 font-medium">
                                 Email
@@ -157,6 +254,8 @@ export default function Login() {
                                 <input
                                     type="checkbox"
                                     className="accent-green-600"
+                                    checked={rememberMe}
+                                    onChange={handleRememberMeChange}
                                 />
                                 Ingat saya
                             </label>
