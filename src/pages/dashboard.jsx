@@ -2,31 +2,26 @@ import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { useNavigate } from 'react-router-dom';
 import { signOut } from "firebase/auth";
-import { auth } from "../firebase"; // Sesuaikan dengan jalur file konfigurasi Firebase Anda
 import { deleteUser } from "firebase/auth";
-import.meta.env.VITE_GEMINI_API_KEY
+import { FaCamera } from 'react-icons/fa';
+import { motion } from "framer-motion";
+import { db, auth } from "../firebase"; 
+import { collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 
 export default function EcoFeastApp() {
 
     const navigate = useNavigate();
-    // ==============================================
-    // 1. STATE MANAGEMENT GLOBAL (DIUBAH MENJADI DINAMIS)
-    // ==============================================
-    // 💡 Diubah: Mengosongkan isi pantry agar client memulai dengan daftar milik mereka sendiri
     const [pantryItems, setPantryItems] = useState([]);
 
-    // 💡 Diubah: Mengubah nilai awal metrik menjadi 0 agar akumulasi dihitung dari awal oleh client
     const [co2Saved, setCo2Saved] = useState(0);
     const [itemsSaved, setItemsSaved] = useState(0);
 
-    // State untuk Generator Resep AI (Tetap sama)
     const [selectedIngredients, setSelectedIngredients] = useState([]);
     const [aiRecipe, setAiRecipe] = useState(null);
     const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false);
     const [wasteInput, setWasteInput] = useState('');
     const [wasteResult, setWasteResult] = useState(null);
     const [isClassifyingWaste, setIsClassifyingWaste] = useState(false);
-    // State untuk Kontrol Kamera HP (Scanner)
     const [isScanModalOpen, setIsScanModalOpen] = useState(false);
     const [isCameraActive, setIsCameraActive] = useState(false);
     const [scannedResult, setScannedResult] = useState(null);
@@ -97,25 +92,48 @@ export default function EcoFeastApp() {
         };
     }, [isScanModalOpen]);
 
-    // ==============================================
-    // 2. LOGIKA & FUNGSI SMART PANTRY & KAMERA
-    // ==============================================
+
+// Mengambil data pantry secara otomatis dari Cloud Firestore (Versi Stabil saat Refresh)
+useEffect(() => {
+    // Gunakan onAuthStateChanged agar program bersabar menunggu sesi login Firebase siap
+    const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
+        if (!currentUser) {
+            console.log("Menunggu sesi login user siap...");
+            return;
+        }
+
+        console.log("User terdeteksi aktif, mengambil data untuk UID:", currentUser.uid);
+        
+        // Daftarkan listener Firestore setelah user dipastikan tidak null
+        const pantryRef = collection(db, "users", currentUser.uid, "bahan makanan");
+        
+        const unsubscribePantry = onSnapshot(pantryRef, (snapshot) => {
+            const items = [];
+            snapshot.forEach((doc) => {
+                items.push({ id: doc.id, ...doc.data() });
+            });
+            setPantryItems(items);
+            console.log("Data bahan makanan berhasil disinkronisasi dari Firestore:", items);
+        }, (error) => {
+            console.error("Gagal mengambil data dari Firestore:", error);
+        });
+
+        // Hapus listener pantry jika user logout atau pindah halaman
+        return () => unsubscribePantry();
+    });
+
+    return () => unsubscribeAuth();
+}, []);                
     const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
 
-    // ==========================================
-    // FUNGSI 1: MEMBUKA KAMERA PERANGKAT
-    // ==========================================
     const startCamera = () => {
         setIsScanModalOpen(true);
         setScannedResult(null);
         setIsAnalyzingCamera(false);
     };
 
-    // ==========================================
-    // FUNGSI 2: MENJEPRET GAMBAR & ANALISIS AI
-    // ==========================================
     const captureAndAnalyze = async (e) => {
-        if (e) e.preventDefault(); // Menahan refresh halaman dashboard
+        if (e) e.preventDefault();
 
         if (!isCameraActive || !videoRef.current) {
             alert("Kamera belum aktif atau belum siap.");
@@ -125,7 +143,6 @@ export default function EcoFeastApp() {
         setIsAnalyzingCamera(true);
 
         try {
-            // 2. Ambil gambar snapshot dari video menggunakan HTML5 Canvas
             const canvas = document.createElement('canvas');
             canvas.width = videoRef.current.videoWidth || 640;
             canvas.height = videoRef.current.videoHeight || 480;
@@ -133,10 +150,8 @@ export default function EcoFeastApp() {
             const ctx = canvas.getContext('2d');
             ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
 
-            // 3. Ubah hasil snapshot ke format base64
             const base64Image = canvas.toDataURL('image/jpeg').split(',')[1];
 
-            // 4. Buat instruksi (Prompt) ketat untuk format JSON
             const promptInstructions = `
                 Analisis gambar bahan makanan ini. Berikan respons HANYA dalam format JSON mentah berstruktur seperti ini, tanpa penjelasan tambahan lainnya:
                 {
@@ -146,7 +161,6 @@ export default function EcoFeastApp() {
                 }
             `;
 
-            // 5. Eksekusi pemanggilan ke model Gemini 2.5 Flash
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: [
@@ -159,11 +173,10 @@ export default function EcoFeastApp() {
                     }
                 ],
                 config: {
-                    responseMimeType: "application/json", // Mengunci output wajib JSON murni
+                    responseMimeType: "application/json",
                 }
             });
 
-            // Membaca teks hasil respon menggunakan properti candidates standar SDK terbaru
             const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text;
             console.log("Balasan Asli Gemini:", responseText);
 
@@ -171,10 +184,8 @@ export default function EcoFeastApp() {
                 throw new Error("API Gemini gagal memproses gambar atau mengembalikan data kosong.");
             }
 
-            // 6. Bersihkan spasi liar di sekitar JSON string
             const cleanJsonString = responseText.trim();
 
-            // 7. Parsing string bersih menjadi Object Javascript
             let resultJson;
             try {
                 resultJson = JSON.parse(cleanJsonString);
@@ -183,7 +194,6 @@ export default function EcoFeastApp() {
                 throw new Error("Format data dari AI terdistorsi. Silakan coba foto ulang.");
             }
 
-            // 8. Update State jika berhasil tanpa kendala
             setScannedResult({
                 name: resultJson.name || "Bahan Tidak Dikenali",
                 detectedStorage: resultJson.detectedStorage || "Kulkas",
@@ -194,7 +204,6 @@ export default function EcoFeastApp() {
             console.error("Detail Error Sistem Scan AI:", err);
             alert(`Gagal memproses gambar: ${err.message}`);
         } finally {
-            // Animasi loading pemindaian dimatikan baik saat sukses maupun gagal
             setIsAnalyzingCamera(false);
         }
     };
@@ -218,15 +227,21 @@ export default function EcoFeastApp() {
         );
     };
 
-    const handleAddToPantry = () => {
+    const handleAddToPantry = async () => {
         if (!scannedResult?.name) return;
+
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+            alert("Anda harus login terlebih dahulu.");
+            return;
+        }
 
         const normalizedName = scannedResult.name.toLowerCase();
         const existing = pantryItems.some((item) => item.name.toLowerCase() === normalizedName);
 
         if (!existing) {
+            const stringId = Date.now().toString();
             const newItem = {
-                id: Date.now(),
                 name: scannedResult.name,
                 daysLeft: scannedResult.predictedExpiryDays,
                 status:
@@ -236,23 +251,25 @@ export default function EcoFeastApp() {
                             ? 'warning'
                             : 'safe',
                 storage: scannedResult.detectedStorage,
+                createdAt: new Date().toISOString()
             };
 
-            setPantryItems((prev) => [newItem, ...prev]);
-            setItemsSaved((prev) => prev + 1);
+            try {
+                await setDoc(doc(db, "users", currentUser.uid, "bahan makanan", stringId), newItem);
+                setItemsSaved((prev) => prev + 1);
+                alert(`${scannedResult.name} berhasil ditambahkan ke Inventaris.`);
+            } catch (error) {
+                console.error("Gagal menyimpan ke Firestore:", error);
+                alert("Gagal menyimpan data ke cloud.");
+            }
+        } else {
+            alert("Bahan makanan sudah ada di Inventaris.");
         }
 
         stopCamera();
         setScannedResult(null);
-        alert(`${scannedResult.name} berhasil ditambahkan ke pantry.`);
     };
 
-    // ==============================================
-    // 3. LOGIKA & FUNGSI GENERATOR RESEP AI
-    // ==============================================
-    // ==============================================================
-    // DATABASE EMISI & AIR PER BAHAN (Perkiraan Dampak Food Waste)
-    // ==============================================================
     const INGREDIENT_IMPACT_DB = {
         'dada ayam': { co2: 1.2, water: 350, equivalencyFactor: 8 },
         'bayam organik': { co2: 0.2, water: 40, equivalencyFactor: 1.5 },
@@ -261,7 +278,6 @@ export default function EcoFeastApp() {
         'default': { co2: 0.2, water: 30, equivalencyFactor: 1.5 }
     };
 
-    // Fungsi pembantu untuk menghitung total CO2 dari bahan yang dipilih
     const calculateCurrentCo2Saved = (ingredients) => {
         let total = 0;
         ingredients.forEach(ingredient => {
@@ -273,12 +289,10 @@ export default function EcoFeastApp() {
         return +total.toFixed(1);
     };
 
-    // 1. FUNGSI GENERATE RECIPE
-    const generateRecipe = () => {
+    const generateRecipe = async () => {
         if (selectedIngredients.length === 0) return;
         setIsGeneratingRecipe(true);
 
-        // Hitung dampak secara dinamis berdasarkan bahan pilihan saat ini
         let totalCo2Saved = 0;
         let totalWaterSaved = 0;
         let totalHoursEquivalency = 0;
@@ -296,87 +310,109 @@ export default function EcoFeastApp() {
         totalCo2Saved = +totalCo2Saved.toFixed(1);
         totalHoursEquivalency = Math.round(totalHoursEquivalency);
 
-        setTimeout(() => {
+        try {
+            const promptText = `Kamu adalah chef profesional ahli zero-waste. 
+            Buatlah SATU resep hidangan yang lezat, kreatif, dan logis yang memprioritaskan penggunaan bahan-bahan berikut: ${selectedIngredients.join(', ')}.
+
+            Wajib mengembalikan respon dalam format JSON objek dengan struktur persis seperti berikut:
+            {
+            "title": "Nama resep yang menarik dan kreatif",
+            "time": "Durasi memasak (misal: 15 Menit)",
+            "difficulty": "Tingkat kesulitan (Mudah/Sedang/Ahli)",
+            "zeroWasteTip": "Berikan 1 tips dapur spesifik bagaimana memaksimalkan sisa bahan ini atau cara menyimpannya agar tidak mubazir",
+            "steps": [
+            {
+            "tahap": "Nama tahapan singkat (maksimal 4 kata)",
+             "instruksi": "Penjelasan detail apa yang harus dilakukan pada tahap ini secara berurutan"
+                    }
+                ]
+            }`;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: promptText,
+                config: {
+                    responseMimeType: 'application/json',
+                    temperature: 0.3
+                }
+            });
+
+            const recipeData = JSON.parse(response.text);
+
             setAiRecipe({
-                title: "Eco-Stir Fry Premium (Kreasi Anti-Mubazir)",
-                time: "12 Menit",
-                difficulty: "Sangat Mudah",
+                title: recipeData.title,
+                time: recipeData.time,
+                difficulty: recipeData.difficulty,
                 ecoMetrics: {
                     co2Saved: `${totalCo2Saved} kg CO₂`,
                     waterSaved: `${totalWaterSaved} Liter`,
                     impactEquivalency: `Setara mematikan lampu selama ${totalHoursEquivalency} jam`
                 },
-                zeroWasteTip: "Jangan buang batang bayam atau bonggol bawang! Iris tipis-tipis dan tumis di awal bersama bawang untuk memberikan tekstur renyah kaya serat.",
+                zeroWasteTip: recipeData.zeroWasteTip,
                 ingredientsUsed: selectedIngredients,
-                steps: [
-                    {
-                        tahap: "Persiapan Bahan Pintar",
-                        instruksi: `Ambil bahan pilihanmu: ${selectedIngredients.join(', ')}. Cuci bersih. Jika ayam agak beku, rendam wadahnya di air dingin (jangan air mengalir untuk hemat air).`
-                    },
-                    {
-                        tahap: "Ekstraksi Aroma No-Waste",
-                        instruksi: "Panaskan 1 sendok makan minyak kelapa/sawit. Tumis irisan tipis bawang bombay beserta kulit ari terdalamnya yang bersih hingga mengalami karamelisasi ringan."
-                    },
-                    {
-                        tahap: "Pemasakan Protein Efisien",
-                        instruksi: "Masukkan potongan Dada Ayam. Masak dengan api sedang selama 4 menit hingga warnanya berubah memutih dan mengunci saripati dagingnya."
-                    },
-                    {
-                        tahap: "Flash-Cooking Sayuran",
-                        instruksi: "Masukkan Tomat Ceri (belah dua agar jusnya keluar menjadi saus alami) dan Bayam Organik. Besarkan api, tumis cepat selama maksimal 2 menit agar warna hijau klorofil dan vitaminnya tidak rusak."
-                    }
-                ]
+                steps: recipeData.steps
             });
+
+        } catch (error) {
+            console.error("Gagal mendapatkan resep dari Gemini:", error);
+            alert("Gagal meramu resep otomatis. Pastikan koneksi internet stabil dan API Key kamu aktif.");
+        } finally {
             setIsGeneratingRecipe(false);
-        }, 1800);
+        }
     };
 
-    // 2. FUNGSI COMPLETE COOKING
-    const handleCompleteCooking = () => {
-        // Hitung persis berapa CO2 yang diselamatkan dari bahan-bahan yang aktif diolah saat ini
-        const dynamicCo2Saved = calculateCurrentCo2Saved(selectedIngredients);
+    const handleCompleteCooking = async () => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) return;
 
-        // Kurangi bahan yang dimasak dari pantry dan update dashboard dampak
-        setPantryItems(pantryItems.filter(item => !selectedIngredients.includes(item.name)));
+    const dynamicCo2Saved = calculateCurrentCo2Saved(selectedIngredients);
+    const itemsToDelete = pantryItems.filter(item => selectedIngredients.includes(item.name));
 
-        // Tambahkan nilai dinamis ke akumulasi data CO2 global dashboard
+    try {
+        // Hapus bahan yang dimasak satu per satu dari Firestore
+        const deletePromises = itemsToDelete.map(item => 
+            deleteDoc(doc(db, "users", currentUser.uid, "bahan makanan", item.id.toString()))
+        );
+        await Promise.all(deletePromises);
+
         setCo2Saved(prev => +(prev + dynamicCo2Saved).toFixed(1));
-
-        // Tambahkan juga jumlah item yang berhasil diselamatkan ke metric dashboard kamu
         setItemsSaved(prev => prev + selectedIngredients.length);
 
         setSelectedIngredients([]);
         setAiRecipe(null);
         alert(`Selamat! Kamu berhasil memasak tanpa sisa makanan dan mengurangi jejak karbon sebesar ${dynamicCo2Saved} kg CO₂!`);
-    };
+    } catch (error) {
+        console.error("Gagal memperbarui pantry setelah memasak:", error);
+        alert("Terjadi kesalahan saat memperbarui data pantry.");
+    }
+};
 
-    // ==============================================
-    // 4. LOGIKA & FUNGSI PEMILAH SAMPAH AI
-    // ==============================================
+    const handleDeleteItem = async (id) => {
+        const currentUser = auth.currentUser;
+        if (!currentUser) return;
 
-
-    const handleDeleteItem = (id) => {
-        // 1. Perbarui state pantryItems dengan membuang item yang dipilih
-        setPantryItems((prevItems) => prevItems.filter((item) => item.id !== id));
-
-        // 2. Opsional: Hapus juga dari daftar bahan yang sedang dipilih (selectedIngredients) 
-        // agar sinkron jika item yang dihapus kebetulan sedang dalam kondisi 'terpilih'
         const itemYangDihapus = pantryItems.find((item) => item.id === id);
-        if (itemYangDihapus) {
-            setSelectedIngredients((prevSelected) =>
-                prevSelected.filter((name) => name !== itemYangDihapus.name)
-            );
+
+        try {
+
+            await deleteDoc(doc(db, "users", currentUser.uid, "bahan makanan", id.toString()));
+
+            if (itemYangDihapus) {
+                setSelectedIngredients((prevSelected) =>
+                    prevSelected.filter((name) => name !== itemYangDihapus.name)
+                );
+            }
+        } catch (error) {
+            console.error("Gagal menghapus dari Firestore:", error);
+            alert("Gagal menghapus bahan makanan.");
         }
     };
 
-    // realtime grafik rasio pengolahan sampah
-    // STATE BARU: Menyimpan total hitungan sampah yang sudah dianalisis
     const [wasteCount, setWasteCount] = useState({
-        organic: 0,    // Nilai default awal (biar grafik tidak kosong di awal)
-        inorganic: 0   // Sesuaikan dengan rasio awal 70% dan 30%
+        organic: 0,  
+        inorganic: 0   
     });
 
-    // 3. LOGIKA KALKULASI: Menghitung persentase secara otomatis
     const totalWaste = wasteCount.organic + wasteCount.inorganic;
     const organicPercentage = totalWaste > 0 ? Math.round((wasteCount.organic / totalWaste) * 100) : 0;
     const inorganicPercentage = totalWaste > 0 ? Math.round((wasteCount.inorganic / totalWaste) * 100) : 0;
@@ -388,9 +424,6 @@ export default function EcoFeastApp() {
         setIsClassifyingWaste(true);
 
         try {
-            // --- SIMULASI ATAU HIT KE API AI ANDA ---
-            // Di sini saya asumsikan AI mengembalikan data kategori "Organik" atau "Anorganik"
-            // Contoh dummy response:
             const isOrganicKeyword = /kulit|telur|sisa|sayur|buah|bumbu/i.test(wasteInput);
 
             const mockAIResult = {
@@ -401,11 +434,9 @@ export default function EcoFeastApp() {
                 color: isOrganicKeyword ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200',
                 badge: isOrganicKeyword ? 'bg-emerald-500' : 'bg-amber-400'
             };
-            // ----------------------------------------
 
             setWasteResult(mockAIResult);
 
-            // LOGIKA UPDATE GRAFIK: Tambahkan +1 ke kategori yang sesuai hasil AI
             setWasteCount((prev) => {
                 if (mockAIResult.category === 'Organik') {
                     return { ...prev, organic: prev.organic + 1 };
@@ -414,7 +445,7 @@ export default function EcoFeastApp() {
                 }
             });
 
-            setWasteInput(''); // Reset input text field
+            setWasteInput(''); 
         } catch (error) {
             console.error("Gagal menganalisis sampah:", error);
         } finally {
@@ -422,27 +453,23 @@ export default function EcoFeastApp() {
         }
     };
 
-    // function untuk logout
+
     const handleLogout = async () => {
-        // Berikan konfirmasi yang jelas karena aksi ini menghapus akun selamanya
         const konfirmasi = window.confirm(
             "Apakah Anda yakin ingin MENGHAPUS AKUN ini secara permanen dari sistem?"
         );
 
         if (konfirmasi) {
             try {
-                // 2. Ambil data pengguna yang sedang login saat ini
                 const currentUser = auth.currentUser;
 
                 if (currentUser) {
                     console.log("Sedang menghapus akun:", currentUser.email);
 
-                    // 3. KUNCI UTAMA: Hapus akun secara permanen dari Firebase Authentication
                     await deleteUser(currentUser);
 
                     alert("Akun Anda telah berhasil dihapus secara permanen.");
 
-                    // 4. Alihkan kembali ke halaman login
                     navigate('/login');
                 } else {
                     alert("Tidak ada sesi pengguna aktif yang ditemukan.");
@@ -451,7 +478,6 @@ export default function EcoFeastApp() {
             } catch (error) {
                 console.error("Gagal menghapus akun:", error);
 
-                // Firebase melarang penghapusan akun jika user sudah login terlalu lama (keamanan)
                 if (error.code === 'auth/requires-recent-login') {
                     alert("Sesi Anda telah kedaluwarsa demi keamanan. Silakan keluar, masuk kembali, lalu coba hapus akun lagi.");
                 } else {
@@ -459,56 +485,68 @@ export default function EcoFeastApp() {
                 }
             }
         }
-    };  
+    };
     return (
         <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased">
 
-            <nav className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <nav className="sticky top-0 z-50 backdrop-blur-xl bg-white/70 border-b border-white/30 shadow-lg transition-all duration-300">
+                <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
 
-                    {/* LOGO ECOFEAST */}
-                    <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">E</div>
-                        <span className="text-xl font-bold tracking-tight text-slate-900">Eco<span className="text-emerald-600">Feast</span></span>
+                    <div className="flex items-center gap-3 cursor-pointer group">
+
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-green-700 flex items-center justify-center text-white font-bold text-xl shadow-lg transition-all duration-300 group-hover:rotate-12 group-hover:scale-110">E</div>
+                        
+                        <h1 className="text-2xl font-bold tracking-tight">
+                            <span className="text-slate-800">Eco</span>
+                            <span className="text-emerald-600">Feast</span>
+                        </h1>
+
                     </div>
 
-                    {/* MENU & TOMBOL LOGOUT */}
-                    <div className="flex items-center gap-6">
-                        {/* Link Navigasi Menu */}
-                        <div className="hidden sm:flex gap-6 text-sm font-medium text-slate-600">
-                            <a href="#pantry" className="text-emerald-600 hover:text-emerald-700 transition">Smart Pantry</a>
-                            <a href="#resep" className="hover:text-emerald-600 transition">AI Recipe</a>
-                            <a href="#waste" className="hover:text-emerald-600 transition">Waste Classifier</a>
+                    <div className="flex items-center gap-8">
+
+                        <div className="hidden md:flex items-center gap-8 text-sm font-semibold">
+
+                            <a href="#inventaris" className="relative text-slate-600 hover:text-emerald-600 transition after:absolute after:left-0 after:-bottom-1 after:h-[2px] after:w-0 after:bg-emerald-500 after:transition-all hover:after:w-full">Daftar Inventaris</a>
+
+                            <a href="#resep" className="relative text-slate-600 hover:text-emerald-600 transition after:absolute after:left-0 after:-bottom-1 after:h-[2px] after:w-0 after:bg-emerald-500 after:transition-all hover:after:w-full">AI Asisten</a>
+
+                            <a href="#waste" className="relative text-slate-600 hover:text-emerald-600 transition after:absolute after:left-0 after:-bottom-1 after:h-[2px] after:w-0 after:bg-emerald-500 after:transition-all hover:after:w-full">Pemilahan sampah</a>
+
                         </div>
 
-                        {/* Garis Pembatas Vertikal Ringan (Hanya muncul di layar sm ke atas) */}
-                        <span className="hidden sm:block h-5 w-px bg-slate-200" aria-hidden="true"></span>
+                        <div className="hidden md:block w-px h-6 bg-slate-300"></div>
 
-                        {/* TOMBOL LOGOUT BARU */}
                         <button
                             onClick={handleLogout}
-                            className="flex items-center gap-1.5 text-sm font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-xl transition duration-200"
-                            title="Keluar dari akun"
+                            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-red-400 to-rose-400 text-white font-semibold shadow-md transition-all duration-300 hover:from-red-500 hover:to-rose-500 hover:shadow-lg hover:shadow-red-200 hover:scale-105 active:scale-95"
                         >
-                            {/* SVG Ikon Logout (Pintu Keluar) */}
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
+
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                strokeWidth="2"
+                                stroke="currentColor"
+                                className="w-5 h-5"
+                            >
+                                <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6A2.25 2.25 0 005.25 5.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m-3-3l3-3m0 0l-3-3m3 3H9"
+                                />
                             </svg>
-                            <span>Keluar</span>
+                            Logout
                         </button>
                     </div>
-
                 </div>
             </nav>
 
-            {/* MAIN CONTAINER */}
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
-                {/* HERO SECTION & METRICS DASHBOARD */}
                 <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 bg-linear-to-br from-emerald-800 to-emerald-950 rounded-2xl p-6 text-white shadow-md flex flex-col justify-between">
-                        <div>
-                            <span className="bg-emerald-700/50 text-emerald-200 text-xs px-2.5 py-1 rounded-full font-medium border border-emerald-600/30">Dampak Lingkunganmu</span>
+                    <div className="lg:col-span-2 bg-linear-to-br from-emerald-800 to-emerald-950 rounded-2xl p-6 text-white shadow-md flex flex-col justify-between border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"><div>
+                            <span className="bg-emerald-700/50 text-emerald-200 text-xs px-2.5 py-1 rounded-full font-medium border border-emerald-600/30">Dashboard EcoFeast</span>
                             <h1 className="text-2xl sm:text-3xl font-bold mt-3 leading-tight">Dapur Minim Sampah, Bumi Lebih Sehat.</h1>
                             <p className="text-emerald-100/80 text-sm mt-2 max-w-xl">Ayo cegah penumpukan sampah makanan di TPA dengan memantau kedaluwarsa bahan masakan secara cerdas bersama AI.</p>
                         </div>
@@ -518,35 +556,31 @@ export default function EcoFeastApp() {
                                 <span className="text-2xl font-bold">{co2Saved} kg</span>
                             </div>
                             <div className="border-l border-emerald-700/40 pl-6">
-                                <span className="text-xs text-emerald-200/70 block">Total Bahan Selamat</span>
+                                <span className="text-xs text-emerald-200/70 block">Total Bahan Makanan Selamat</span>
                                 <span className="text-2xl font-bold">{itemsSaved} Bahan</span>
                             </div>
                         </div>
                     </div>
 
-                    {/* REALISTIC LIVE BAR CHART SIMULATION */}
-                    <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm flex flex-col justify-between">
-                        <h3 className="text-sm font-bold text-slate-900">Rasio Pengolahan Sampah</h3>
+                    <div className="bg-white rounded-2xl p-6 shadow-sm flex flex-col justify-between border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100">
+                        <h3 className="text-sm font-bold text-slate-900  transition-all">Grafik Pengolahan Sampah</h3>
 
-                        {/* Box Container Grafik dengan tinggi statis h-32 */}
                         <div className="flex items-end justify-center gap-6 h-32 my-4 border-b border-slate-100 pb-1">
 
-                            {/* Batang Organik */}
                             <div className="flex flex-col items-center gap-2 w-full h-full justify-end">
                                 <div
                                     className="bg-emerald-500 w-12 rounded-t-lg transition-all duration-500 ease-out"
-                                    style={{ height: `${organicPercentage}%` }} // Tinggi dinamis %
+                                    style={{ height: `${organicPercentage}%` }}
                                 ></div>
                                 <span className="text-xs font-medium text-slate-500 whitespace-nowrap">
                                     Organik ({organicPercentage}%)
                                 </span>
                             </div>
 
-                            {/* Batang Anorganik */}
                             <div className="flex flex-col items-center gap-2 w-full h-full justify-end">
                                 <div
                                     className="bg-amber-400 w-12 rounded-t-lg transition-all duration-500 ease-out"
-                                    style={{ height: `${inorganicPercentage}%` }} // Tinggi dinamis %
+                                    style={{ height: `${inorganicPercentage}%` }}
                                 ></div>
                                 <span className="text-xs font-medium text-slate-500 whitespace-nowrap">
                                     Anorganik ({inorganicPercentage}%)
@@ -557,25 +591,31 @@ export default function EcoFeastApp() {
                     </div>
                 </div>
 
-                {/* INTERACTIVE WORKSPACE GRID */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
 
-                    {/* COLUMN 1 & 2: PANTRY AND RECIPE GENERATOR */}
                     <div className="lg:col-span-2 space-y-8">
 
-                        {/* PANTRY MANAGEMENT COMPONENT */}
-                        <section id="pantry" className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+                        <section
+                            id="inventaris"
+                            className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                        >
                             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-6">
                                 <div>
-                                    <h2 className="text-lg font-bold text-slate-900">Daftar Inventaris Pantry</h2>
+                                    <h2 className="text-lg font-bold text-slate-900">Daftar Inventaris Bahan Makanan</h2>
                                     <p className="text-xs text-slate-500">Ketuk bahan makanan untuk mengolahnya menjadi makanan siap santap.</p>
                                 </div>
                                 <button
                                     onClick={startCamera}
-                                    //dari sini
-                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-4 py-2 rounded-xl transition shadow-sm flex items-center gap-2"
+                                    className="group relative overflow-hidden flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 via-green-600 to-emerald-700 text-white font-semibold shadow-lg transition-all duration-300 hover:scale-105 hover:shadow-[0_0_25px_rgba(16,185,129,0.45)] active:scale-95"
                                 >
-                                    <span>📷 Scan via Kamera HP</span>
+
+                                    <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/30 to-transparent group-hover:translate-x-full transition-transform duration-700"></span>
+
+                                    <span className="relative z-10">
+                                        Scan Dengan Kamera
+                                    </span>
+
+                                    <FaCamera className="relative z-10 w-5 h-5 transition-transform duration-300 group-hover:rotate-12 group-hover:scale-125" />
                                 </button>
                             </div>
 
@@ -622,8 +662,10 @@ export default function EcoFeastApp() {
                             </div>
                         </section>
 
-                        {/* AI COOKING EXPERT (RECIPE GENERATOR) */}
-                        <section id="resep" className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+                        <section
+                            id="resep"
+                            className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                        >
                             <h2 className="text-lg font-bold text-slate-900 mb-1">Asisten Memasak AI EcoFeast</h2>
                             <p className="text-xs text-slate-500 mb-4">Sistem AI akan menyusun resep kreatif demi menekan potensi limbah makanan terbuang.</p>
 
@@ -651,14 +693,12 @@ export default function EcoFeastApp() {
                                 {isGeneratingRecipe ? 'Kecerdasan AI Sedang Meracik Resep...' : 'Generate Resep Kreatif No-Waste'}
                             </button>
 
-                            {/* TAMPILAN RESEP HASIL OLAHAN AI (PREMIUM VIEW) */}
                             {aiRecipe && (
                                 <div className="mt-6 border border-emerald-500/20 rounded-2xl bg-linear-to-b from-emerald-50/30 to-white p-5 sm:p-6 shadow-sm animate-fade-in">
 
-                                    {/* Header Resep */}
                                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3 border-b border-slate-100 pb-4">
                                         <div>
-                                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2.5 py-1 rounded-md uppercase tracking-wider">
+                                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2.5 py-1 rounded-md uppercase track    ing-wider">
                                                 Rekomendasi Optimal AI
                                             </span>
                                             <h3 className="text-lg font-bold text-slate-900 mt-1.5">{aiRecipe.title}</h3>
@@ -669,7 +709,6 @@ export default function EcoFeastApp() {
                                             </div>
                                         </div>
 
-                                        {/* Target Pencapaian Masak */}
                                         <div className="bg-slate-900 text-white p-3 rounded-xl text-right shrink-0 shadow-sm w-full sm:w-auto">
                                             <span className="text-[10px] text-slate-400 block font-medium">Eco-Impact Score:</span>
                                             <span className="text-sm font-bold text-emerald-400">-{aiRecipe.ecoMetrics.co2Saved}</span>
@@ -679,13 +718,11 @@ export default function EcoFeastApp() {
                                         </div>
                                     </div>
 
-                                    {/* Green Equivalency Badge */}
                                     <div className="mt-3 bg-emerald-700 text-white px-3 py-2 rounded-xl text-xs flex items-center gap-2 font-medium shadow-inner">
                                         <span>💡</span>
                                         <span>{aiRecipe.ecoMetrics.impactEquivalency}</span>
                                     </div>
 
-                                    {/* AI Zero-Waste Tips Box */}
                                     <div className="mt-4 bg-amber-50/70 border border-amber-200 rounded-xl p-4 flex gap-3">
                                         <span className="text-xl shrink-0">🌿</span>
                                         <div>
@@ -694,7 +731,6 @@ export default function EcoFeastApp() {
                                         </div>
                                     </div>
 
-                                    {/* Alur Langkah Memasak Dinamis */}
                                     <div className="mt-6 space-y-4">
                                         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Langkah Pembuatan:</h4>
                                         {aiRecipe.steps.map((step, idx) => (
@@ -710,22 +746,32 @@ export default function EcoFeastApp() {
                                         ))}
                                     </div>
 
-                                    {/* Action Selesai */}
                                     <button
                                         onClick={handleCompleteCooking}
-                                        className="w-full mt-6 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-3 rounded-xl transition shadow-md tracking-wide"
+                                        className="group relative w-full mt-6 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 via-green-600 to-emerald-700 py-3 text-sm font-semibold text-white shadow-lg transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_25px_rgba(16,185,129,0.4)] active:scale-95"
                                     >
-                                        ✓ Saya Selesai Memasak & Habis Tanpa Sisa
+
+                                        <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent group-hover:translate-x-full transition-transform duration-700"></span>
+
+                                        <span className="relative flex items-center justify-center gap-2">
+                                            <span className="text-lg transition-transform duration-300 group-hover:scale-125">
+                                                ✓
+                                            </span>
+
+                                            Saya Selesai Memasak & Habis Tanpa Sisa
+                                        </span>
                                     </button>
                                 </div>
                             )}
                         </section>
                     </div>
 
-                    {/* COLUMN 3: SIDEBAR AI WASTE CLASSIFIER */}
                     <div className="lg:col-span-1">
-                        <section id="waste" className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm sticky top-24">
-                            <div className="w-10 h-10 bg-amber-50 border border-amber-200 text-amber-600 rounded-xl flex items-center justify-center text-lg mb-3 shadow-sm">♻️</div>
+                        <section 
+                            id="waste" 
+                            className="bg-white rounded-2xl p-6 shadow-sm sticky top-24 border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                        >
+                            <div className="w-10 h-10 bg-amber-50 border border-amber-200 text-amber-600 rounded-xl flex items-center justify-center text-lg mb-3 shadow-sm animate-bounce">♻️</div>
                             <h2 className="text-lg font-bold text-slate-900">Pemilah Sampah Rumah Tangga</h2>
                             <p className="text-xs text-slate-500 mt-1 mb-4">Tanyakan pengelompokan sampah sisa bumbu dapur atau bungkus bahan di sini.</p>
 
@@ -740,13 +786,33 @@ export default function EcoFeastApp() {
                                 <button
                                     type="submit"
                                     disabled={isClassifyingWaste}
-                                    className="w-full bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white font-bold text-sm py-2.5 px-4 rounded-xl transition shadow-sm"
-                                >
-                                    {isClassifyingWaste ? 'Analisis AI Sedang Berjalan...' : 'Analisis Kategori Sampah'}
+                                    className={`
+                                        group relative w-full overflow-hidden rounded-xl py-3 px-4 font-semibold text-white transition-all duration-300
+                                        ${isClassifyingWaste
+                                        ? "bg-slate-500 cursor-not-allowed"
+                                        : "bg-gradient-to-r from-slate-800 via-slate-900 to-black hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(15,23,42,0.35)] active:scale-95"
+                                        }
+                                    `}
+                                    >
+
+                                    {!isClassifyingWaste && (
+                                        <span className="absolute inset-0-translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent group-hover:translate-x-full transition-transform duration-700"/>
+                                    )}
+
+                                    <span className="relative flex items-center justify-center gap-3">
+
+                                        {isClassifyingWaste && (
+                                            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                        )}
+
+                                        {isClassifyingWaste
+                                            ? "AI Sedang Menganalisis..."
+                                            : "Analisis Kategori Sampah"}
+
+                                    </span>
                                 </button>
                             </form>
 
-                            {/* OUTCOMES DARI ANALYSIS SAMPAH */}
                             {wasteResult && (
                                 <div className={`mt-4 p-4 rounded-xl border ${wasteResult.color} text-sm leading-relaxed shadow-sm animate-fade-in`}>
                                     <div className="flex items-center gap-2 font-bold mb-2 text-slate-900">
@@ -762,20 +828,15 @@ export default function EcoFeastApp() {
                 </div>
             </main>
 
-            {/* ==============================================
-        5. MODAL COMPONENT WINDOW: REAL CAMERA INPUT 
-         ============================================== */}
             {isScanModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity">
                     <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-100 animate-scale-up">
 
-                        {/* Modal Top Header */}
                         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <h3 className="font-bold text-slate-800 text-sm">AI Smart Scanner Kamera</h3>
                             <button onClick={stopCamera} className="text-slate-400 hover:text-slate-600 font-bold text-sm transition">✕</button>
                         </div>
 
-                        {/* Video Live Streaming Viewfinder */}
                         <div className="relative bg-black aspect-video flex items-center justify-center overflow-hidden">
                             <video
                                 ref={videoRef}
@@ -791,13 +852,12 @@ export default function EcoFeastApp() {
                                 </div>
                             )}
 
-                            {/* Target Area Outline overlay */}
                             {isCameraActive && !scannedResult && (
                                 <div className="absolute inset-8 border-2 border-dashed border-emerald-400 rounded-xl pointer-events-none opacity-70 animate-pulse flex items-center justify-center">
                                     <span className="text-white text-[10px] bg-black/50 px-2 py-0.5 rounded shadow-sm">Posisikan bahan baku di kotak ini</span>
                                 </div>
                             )}
-                            {/* Running Analysis AI Spinners Overlay */}
+
                             {isAnalyzingCamera && (
                                 <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center text-white text-xs gap-3">
                                     <div className="w-7 h-7 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
@@ -806,7 +866,6 @@ export default function EcoFeastApp() {
                             )}
                         </div>
 
-                        {/* Bottom Form Control Panel */}
                         <div className="p-4 bg-slate-50 border-t border-slate-100 space-y-4">
                             {!scannedResult ? (
                                 <button
@@ -818,7 +877,6 @@ export default function EcoFeastApp() {
                                     {isAnalyzingCamera ? 'Membaca Data Gambar...' : 'Ambil Gambar & Pindai'}
                                 </button>
                             ) : (
-                                /* IF DETECTED SUCCESS */
                                 <div className="space-y-3 animate-fade-in">
                                     <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 text-xs">
                                         <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block">Terdeteksi Otomatis:</span>

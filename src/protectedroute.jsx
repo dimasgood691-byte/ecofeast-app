@@ -9,7 +9,6 @@ const ProtectedRoute = ({ children }) => {
     const auth = getAuth();
 
     useEffect(() => {
-        // Mengecek status login user dari Firebase secara real-time
         const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
             setUser(currentUser);
             setLoading(false);
@@ -18,15 +17,12 @@ const ProtectedRoute = ({ children }) => {
         return () => unsubscribe();
     }, [auth]);
 
-    // Tampilkan loading screen sebentar saat Firebase sedang mengecek status user
     if (loading) return <div style={{ padding: '20px' }}>Loading...</div>;
 
-    // Jika user tidak ada (belum login), tendang ke halaman /login
     if (!user) {
         return <Navigate to="/login" replace />;
     }
 
-    // Jika sudah login, izinkan mengakses halaman di dalamnya (children)
     return children;
 };
 
