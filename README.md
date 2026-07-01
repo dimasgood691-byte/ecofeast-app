@@ -16,4 +16,4 @@ The React Compiler is not enabled on this template because of its impact on dev 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
 # ecofeast-app
 
-<!-- buat file .env di dalam folder ecofeast dan isi dengan code API berikut ini VITE_GEMINI_API_KEY=AQ.Ab8RN6IQ-KZIClTbTZ6mGi2bZB93rd8A8qo3tb2DnlKNkx7T7A -->
+<!-- buat file .env di dalam folder ecofeast dan isi dengan code API berikut ini VITE_GEMINI_API_KEY= ISI_API_KEY_KAMU_DISINI -->
