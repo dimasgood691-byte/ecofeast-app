@@ -5,17 +5,16 @@ import { signOut } from "firebase/auth";
 import { deleteUser } from "firebase/auth";
 import { FaCamera } from 'react-icons/fa';
 import { motion } from "framer-motion";
-import { db, auth } from "../firebase"; 
-import { collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { db, auth } from "../firebase";
+import { getAuth } from 'firebase/auth';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc, increment } from "firebase/firestore";
 
 export default function EcoFeastApp() {
 
     const navigate = useNavigate();
     const [pantryItems, setPantryItems] = useState([]);
-
     const [co2Saved, setCo2Saved] = useState(0);
     const [itemsSaved, setItemsSaved] = useState(0);
-
     const [selectedIngredients, setSelectedIngredients] = useState([]);
     const [aiRecipe, setAiRecipe] = useState(null);
     const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false);
@@ -26,10 +25,10 @@ export default function EcoFeastApp() {
     const [isCameraActive, setIsCameraActive] = useState(false);
     const [scannedResult, setScannedResult] = useState(null);
     const [isAnalyzingCamera, setIsAnalyzingCamera] = useState(false);
-
     const videoRef = useRef(null);
     const streamRef = useRef(null);
 
+    // EFFECT 1: Cleanup kamera saat unmount
     useEffect(() => {
         return () => {
             if (streamRef.current) {
@@ -42,29 +41,25 @@ export default function EcoFeastApp() {
         };
     }, []);
 
+    // EFFECT 2: Kontrol Kamera Scanner
     useEffect(() => {
         if (!isScanModalOpen) return;
-
         let cancelled = false;
 
         const openCamera = async () => {
             setIsCameraActive(false);
             setIsAnalyzingCamera(false);
-
             try {
                 if (!navigator.mediaDevices?.getUserMedia) {
                     throw new Error("Browser tidak mendukung akses kamera.");
                 }
-
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: { ideal: 'environment' } }
                 });
-
                 if (cancelled) {
                     stream.getTracks().forEach((track) => track.stop());
                     return;
                 }
-
                 if (videoRef.current) {
                     videoRef.current.srcObject = stream;
                     streamRef.current = stream;
@@ -76,54 +71,68 @@ export default function EcoFeastApp() {
                 }
             } catch (err) {
                 console.error("Gagal membuka kamera perangkat:", err);
-                if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-                    alert("Akses Kamera Ditolak! Harap berikan izin kamera pada browser untuk situs ini.");
-                } else {
-                    alert(`Gagal mengakses kamera: ${err.message}`);
-                }
+                alert(`Gagal mengakses kamera: ${err.message}`);
                 setIsScanModalOpen(false);
             }
         };
 
         openCamera();
-
-        return () => {
-            cancelled = true;
-        };
+        return () => { cancelled = true; };
     }, [isScanModalOpen]);
 
+    // EFFECT 3: Sinkronisasi Real-Time Firestore (Pantry & Utama)
+    useEffect(() => {
+        const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
+            if (!currentUser) {
+                console.log("Menunggu sesi login user siap...");
+                return;
+            }
 
-// Mengambil data pantry secara otomatis dari Cloud Firestore (Versi Stabil saat Refresh)
-useEffect(() => {
-    // Gunakan onAuthStateChanged agar program bersabar menunggu sesi login Firebase siap
-    const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
-        if (!currentUser) {
-            console.log("Menunggu sesi login user siap...");
-            return;
-        }
+            console.log("User aktif detected. UID:", currentUser.uid);
 
-        console.log("User terdeteksi aktif, mengambil data untuk UID:", currentUser.uid);
-        
-        // Daftarkan listener Firestore setelah user dipastikan tidak null
-        const pantryRef = collection(db, "users", currentUser.uid, "bahan makanan");
-        
-        const unsubscribePantry = onSnapshot(pantryRef, (snapshot) => {
-            const items = [];
-            snapshot.forEach((doc) => {
-                items.push({ id: doc.id, ...doc.data() });
-            });
-            setPantryItems(items);
-            console.log("Data bahan makanan berhasil disinkronisasi dari Firestore:", items);
-        }, (error) => {
-            console.error("Gagal mengambil data dari Firestore:", error);
+            // A. Sinkronisasi Sub-koleksi Bahan Makanan
+            const pantryRef = collection(db, "users", currentUser.uid, "bahan makanan");
+            const unsubscribePantry = onSnapshot(pantryRef, (snapshot) => {
+                const items = [];
+                snapshot.forEach((doc) => {
+                    items.push({ id: doc.id, ...doc.data() });
+                });
+                setPantryItems(items);
+                console.log("Data pantry berhasil disinkronisasi:", items);
+            }, (error) => console.error("Gagal sinkronisasi pantry:", error));
+
+            // B. Sinkronisasi Dokumen Utama (Dampak Lingkungan)
+            // B. Sinkronisasi Dokumen Utama (Dampak Lingkungan & Grafik Sampah)
+            const userMainRef = doc(db, "users", currentUser.uid);
+            unsubscribeMainData = onSnapshot(userMainRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+
+                    // Sinkronisasi CO2 dan Bahan makanan
+                    setCo2Saved(data.co2Saved || 0);
+                    setItemsSaved(data.itemsSaved || 0);
+
+                    // SINKRONISASI DATA GRAFIK SAMPAH DARI FIRESTORE
+                    setWasteCount({
+                        organic: data.wasteOrganic || 0,
+                        inorganic: data.wasteInorganic || 0
+                    });
+
+                    console.log("Data dampak & grafik berhasil disinkronisasi:", data);
+                } else {
+                    console.log("Dokumen utama belum ada di Cloud Firestore.");
+                }
+            }, (error) => console.error("Gagal sinkronisasi data utama:", error));
+
+            return () => {
+                if (unsubscribePantry) unsubscribePantry();
+                if (unsubscribeMainData) unsubscribeMainData();
+            };
         });
 
-        // Hapus listener pantry jika user logout atau pindah halaman
-        return () => unsubscribePantry();
-    });
+        return () => unsubscribeAuth();
+    }, []);
 
-    return () => unsubscribeAuth();
-}, []);                
     const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
 
     const startCamera = () => {
@@ -134,22 +143,18 @@ useEffect(() => {
 
     const captureAndAnalyze = async (e) => {
         if (e) e.preventDefault();
-
         if (!isCameraActive || !videoRef.current) {
             alert("Kamera belum aktif atau belum siap.");
             return;
         }
-
         setIsAnalyzingCamera(true);
 
         try {
             const canvas = document.createElement('canvas');
             canvas.width = videoRef.current.videoWidth || 640;
             canvas.height = videoRef.current.videoHeight || 480;
-
             const ctx = canvas.getContext('2d');
             ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
             const base64Image = canvas.toDataURL('image/jpeg').split(',')[1];
 
             const promptInstructions = `
@@ -165,44 +170,27 @@ useEffect(() => {
                 model: 'gemini-2.5-flash',
                 contents: [
                     promptInstructions,
-                    {
-                        inlineData: {
-                            mimeType: 'image/jpeg',
-                            data: base64Image
-                        }
-                    }
+                    { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
                 ],
-                config: {
-                    responseMimeType: "application/json",
-                }
+                config: { responseMimeType: "application/json" }
             });
 
             const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text;
-            console.log("Balasan Asli Gemini:", responseText);
+            if (!responseText) throw new Error("API Gemini mengembalikan data kosong.");
 
-            if (!responseText) {
-                throw new Error("API Gemini gagal memproses gambar atau mengembalikan data kosong.");
-            }
-
-            const cleanJsonString = responseText.trim();
-
-            let resultJson;
-            try {
-                resultJson = JSON.parse(cleanJsonString);
-            } catch (parseError) {
-                console.error("Gagal melakukan parsing JSON. Text asli:", cleanJsonString);
-                throw new Error("Format data dari AI terdistorsi. Silakan coba foto ulang.");
-            }
-
+            const resultJson = JSON.parse(responseText.trim());
             setScannedResult({
                 name: resultJson.name || "Bahan Tidak Dikenali",
                 detectedStorage: resultJson.detectedStorage || "Kulkas",
                 predictedExpiryDays: Number(resultJson.predictedExpiryDays) || 3
             });
-
         } catch (err) {
             console.error("Detail Error Sistem Scan AI:", err);
-            alert(`Gagal memproses gambar: ${err.message}`);
+            if (err.message?.includes("503") || err.status === 503) {
+                alert("🤖 Server AI Gemini sedang penuh sesak (503). Silakan coba ambil gambar lagi dalam beberapa saat.");
+            } else {
+                alert(`Gagal memproses gambar: ${err.message}`);
+            }
         } finally {
             setIsAnalyzingCamera(false);
         }
@@ -213,9 +201,7 @@ useEffect(() => {
             streamRef.current.getTracks().forEach((track) => track.stop());
             streamRef.current = null;
         }
-        if (videoRef.current) {
-            videoRef.current.srcObject = null;
-        }
+        if (videoRef.current) videoRef.current.srcObject = null;
         setIsCameraActive(false);
         setIsAnalyzingCamera(false);
         setIsScanModalOpen(false);
@@ -229,7 +215,6 @@ useEffect(() => {
 
     const handleAddToPantry = async () => {
         if (!scannedResult?.name) return;
-
         const currentUser = auth.currentUser;
         if (!currentUser) {
             alert("Anda harus login terlebih dahulu.");
@@ -244,19 +229,13 @@ useEffect(() => {
             const newItem = {
                 name: scannedResult.name,
                 daysLeft: scannedResult.predictedExpiryDays,
-                status:
-                    scannedResult.predictedExpiryDays <= 2
-                        ? 'danger'
-                        : scannedResult.predictedExpiryDays <= 5
-                            ? 'warning'
-                            : 'safe',
+                status: scannedResult.predictedExpiryDays <= 2 ? 'danger' : scannedResult.predictedExpiryDays <= 5 ? 'warning' : 'safe',
                 storage: scannedResult.detectedStorage,
                 createdAt: new Date().toISOString()
             };
 
             try {
                 await setDoc(doc(db, "users", currentUser.uid, "bahan makanan", stringId), newItem);
-                setItemsSaved((prev) => prev + 1);
                 alert(`${scannedResult.name} berhasil ditambahkan ke Inventaris.`);
             } catch (error) {
                 console.error("Gagal menyimpan ke Firestore:", error);
@@ -301,7 +280,6 @@ useEffect(() => {
             const normalizedName = ingredient.toLowerCase();
             const matchedKey = Object.keys(INGREDIENT_IMPACT_DB).find(key => normalizedName.includes(key));
             const impact = INGREDIENT_IMPACT_DB[matchedKey] || INGREDIENT_IMPACT_DB['default'];
-
             totalCo2Saved += impact.co2;
             totalWaterSaved += impact.water;
             totalHoursEquivalency += impact.equivalencyFactor;
@@ -311,34 +289,15 @@ useEffect(() => {
         totalHoursEquivalency = Math.round(totalHoursEquivalency);
 
         try {
-            const promptText = `Kamu adalah chef profesional ahli zero-waste. 
-            Buatlah SATU resep hidangan yang lezat, kreatif, dan logis yang memprioritaskan penggunaan bahan-bahan berikut: ${selectedIngredients.join(', ')}.
-
-            Wajib mengembalikan respon dalam format JSON objek dengan struktur persis seperti berikut:
-            {
-            "title": "Nama resep yang menarik dan kreatif",
-            "time": "Durasi memasak (misal: 15 Menit)",
-            "difficulty": "Tingkat kesulitan (Mudah/Sedang/Ahli)",
-            "zeroWasteTip": "Berikan 1 tips dapur spesifik bagaimana memaksimalkan sisa bahan ini atau cara menyimpannya agar tidak mubazir",
-            "steps": [
-            {
-            "tahap": "Nama tahapan singkat (maksimal 4 kata)",
-             "instruksi": "Penjelasan detail apa yang harus dilakukan pada tahap ini secara berurutan"
-                    }
-                ]
-            }`;
+            const promptText = `Kamu adalah chef profesional ahli zero-waste. Buatlah SATU resep hidangan yang lezat dengan bahan: ${selectedIngredients.join(', ')}. Wajib mengembalikan respon dalam format JSON objek dengan struktur persis seperti berikut: {"title": "Nama resep", "time": "15 Menit", "difficulty": "Mudah", "zeroWasteTip": "Tips dapur", "steps": [{"tahap": "Tahap 1", "instruksi": "Detail"}]}`;
 
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: promptText,
-                config: {
-                    responseMimeType: 'application/json',
-                    temperature: 0.3
-                }
+                config: { responseMimeType: 'application/json', temperature: 0.3 }
             });
 
             const recipeData = JSON.parse(response.text);
-
             setAiRecipe({
                 title: recipeData.title,
                 time: recipeData.time,
@@ -352,51 +311,58 @@ useEffect(() => {
                 ingredientsUsed: selectedIngredients,
                 steps: recipeData.steps
             });
-
         } catch (error) {
             console.error("Gagal mendapatkan resep dari Gemini:", error);
-            alert("Gagal meramu resep otomatis. Pastikan koneksi internet stabil dan API Key kamu aktif.");
+            if (error.message?.includes("503") || error.status === 503) {
+                alert("🤖 Server AI Gemini sedang sibuk menerima lonjakan traffic. Silakan coba klik tombol ramu resep kembali.");
+            } else {
+                alert("Gagal meramu resep otomatis: " + error.message);
+            }
         } finally {
             setIsGeneratingRecipe(false);
         }
     };
 
+    // FUNGSI UTAMA: MENYIMPAN DATA DAMPAK LINGKUNGAN KE FIRESTORE SECARA AMAN
     const handleCompleteCooking = async () => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
+        const currentUser = auth.currentUser;
+        if (!currentUser) return;
 
-    const dynamicCo2Saved = calculateCurrentCo2Saved(selectedIngredients);
-    const itemsToDelete = pantryItems.filter(item => selectedIngredients.includes(item.name));
+        const dynamicCo2Saved = calculateCurrentCo2Saved(selectedIngredients);
+        const itemsToDelete = pantryItems.filter(item => selectedIngredients.includes(item.name));
 
-    try {
-        // Hapus bahan yang dimasak satu per satu dari Firestore
-        const deletePromises = itemsToDelete.map(item => 
-            deleteDoc(doc(db, "users", currentUser.uid, "bahan makanan", item.id.toString()))
-        );
-        await Promise.all(deletePromises);
+        try {
+            // 1. Hapus bahan masakan dari sub-koleksi
+            const deletePromises = itemsToDelete.map(item =>
+                deleteDoc(doc(db, "users", currentUser.uid, "bahan makanan", item.id.toString()))
+            );
+            await Promise.all(deletePromises);
 
-        setCo2Saved(prev => +(prev + dynamicCo2Saved).toFixed(1));
-        setItemsSaved(prev => prev + selectedIngredients.length);
+            // 2. Gunakan setDoc + merge: true sebagai pengaman mutlak akumulasi data cloud
+            const userDocRef = doc(db, "users", currentUser.uid);
+            await setDoc(userDocRef, {
+                co2Saved: increment(dynamicCo2Saved),
+                itemsSaved: increment(selectedIngredients.length),
+                lastCookingAt: new Date()
+            }, { merge: true });
 
-        setSelectedIngredients([]);
-        setAiRecipe(null);
-        alert(`Selamat! Kamu berhasil memasak tanpa sisa makanan dan mengurangi jejak karbon sebesar ${dynamicCo2Saved} kg CO₂!`);
-    } catch (error) {
-        console.error("Gagal memperbarui pantry setelah memasak:", error);
-        alert("Terjadi kesalahan saat memperbarui data pantry.");
-    }
-};
+            // 3. Reset state form UI
+            setSelectedIngredients([]);
+            setAiRecipe(null);
+
+            alert(`Selamat! Kamu berhasil memasak tanpa sisa makanan dan mengurangi jejak karbon sebesar ${dynamicCo2Saved} kg CO₂!`);
+        } catch (error) {
+            console.error("Gagal memperbarui pantry setelah memasak:", error);
+            alert("Terjadi kesalahan saat memperbarui data dampak ke database.");
+        }
+    };
 
     const handleDeleteItem = async (id) => {
         const currentUser = auth.currentUser;
         if (!currentUser) return;
-
         const itemYangDihapus = pantryItems.find((item) => item.id === id);
-
         try {
-
             await deleteDoc(doc(db, "users", currentUser.uid, "bahan makanan", id.toString()));
-
             if (itemYangDihapus) {
                 setSelectedIngredients((prevSelected) =>
                     prevSelected.filter((name) => name !== itemYangDihapus.name)
@@ -404,15 +370,10 @@ useEffect(() => {
             }
         } catch (error) {
             console.error("Gagal menghapus dari Firestore:", error);
-            alert("Gagal menghapus bahan makanan.");
         }
     };
 
-    const [wasteCount, setWasteCount] = useState({
-        organic: 0,  
-        inorganic: 0   
-    });
-
+    const [wasteCount, setWasteCount] = useState({ organic: 0, inorganic: 0 });
     const totalWaste = wasteCount.organic + wasteCount.inorganic;
     const organicPercentage = totalWaste > 0 ? Math.round((wasteCount.organic / totalWaste) * 100) : 0;
     const inorganicPercentage = totalWaste > 0 ? Math.round((wasteCount.inorganic / totalWaste) * 100) : 0;
@@ -421,71 +382,58 @@ useEffect(() => {
         e.preventDefault();
         if (!wasteInput.trim()) return;
 
-        setIsClassifyingWaste(true);
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+            alert("Anda harus login untuk mencatat data sampah.");
+            return;
+        }
 
+        setIsClassifyingWaste(true);
         try {
             const isOrganicKeyword = /kulit|telur|sisa|sayur|buah|bumbu/i.test(wasteInput);
+            const categoryResult = isOrganicKeyword ? 'Organik' : 'Anorganik';
 
             const mockAIResult = {
-                category: isOrganicKeyword ? 'Organik' : 'Anorganik',
-                instruction: isOrganicKeyword
-                    ? 'Buang ke komposter atau lubang biopori untuk dijadikan pupuk organik.'
-                    : 'Bilas jika kotor, kumpulkan, lalu salurkan ke bank sampah terdekat.',
+                category: categoryResult,
+                instruction: isOrganicKeyword ? 'Buang ke komposter atau lubang biopori untuk dijadikan pupuk organik.' : 'Bilas jika kotor, kumpulkan, lalu salurkan ke bank sampah terdekat.',
                 color: isOrganicKeyword ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200',
                 badge: isOrganicKeyword ? 'bg-emerald-500' : 'bg-amber-400'
             };
 
             setWasteResult(mockAIResult);
 
-            setWasteCount((prev) => {
-                if (mockAIResult.category === 'Organik') {
-                    return { ...prev, organic: prev.organic + 1 };
-                } else {
-                    return { ...prev, inorganic: prev.inorganic + 1 };
-                }
-            });
+            // UPDATE DATA GRAFIK LANGSUNG KE CLOUD FIRESTORE
+            const userDocRef = doc(db, "users", currentUser.uid);
+            if (categoryResult === 'Organik') {
+                await setDoc(userDocRef, {
+                    wasteOrganic: increment(1)
+                }, { merge: true });
+            } else {
+                await setDoc(userDocRef, {
+                    wasteInorganic: increment(1)
+                }, { merge: true });
+            }
 
-            setWasteInput(''); 
+            setWasteInput('');
         } catch (error) {
-            console.error("Gagal menganalisis sampah:", error);
+            console.error("Gagal menganalisis dan menyimpan data sampah:", error);
+            alert("Terjadi kesalahan saat menyimpan data sampah ke cloud.");
         } finally {
             setIsClassifyingWaste(false);
         }
     };
 
-
     const handleLogout = async () => {
-        const konfirmasi = window.confirm(
-            "Apakah Anda yakin ingin MENGHAPUS AKUN ini secara permanen dari sistem?"
-        );
-
-        if (konfirmasi) {
+        if (window.confirm("Apakah Anda yakin ingin keluar dari aplikasi?")) {
             try {
-                const currentUser = auth.currentUser;
-
-                if (currentUser) {
-                    console.log("Sedang menghapus akun:", currentUser.email);
-
-                    await deleteUser(currentUser);
-
-                    alert("Akun Anda telah berhasil dihapus secara permanen.");
-
-                    navigate('/login');
-                } else {
-                    alert("Tidak ada sesi pengguna aktif yang ditemukan.");
-                    navigate('/login');
-                }
+                await signOut(auth);
+                navigate('/login');
             } catch (error) {
-                console.error("Gagal menghapus akun:", error);
-
-                if (error.code === 'auth/requires-recent-login') {
-                    alert("Sesi Anda telah kedaluwarsa demi keamanan. Silakan keluar, masuk kembali, lalu coba hapus akun lagi.");
-                } else {
-                    alert("Terjadi kesalahan: " + error.message);
-                }
+                console.error("Gagal logout:", error);
             }
         }
     };
+
     return (
         <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased">
 
@@ -495,7 +443,7 @@ useEffect(() => {
                     <div className="flex items-center gap-3 cursor-pointer group">
 
                         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-green-700 flex items-center justify-center text-white font-bold text-xl shadow-lg transition-all duration-300 group-hover:rotate-12 group-hover:scale-110">E</div>
-                        
+
                         <h1 className="text-2xl font-bold tracking-tight">
                             <span className="text-slate-800">Eco</span>
                             <span className="text-emerald-600">Feast</span>
@@ -545,11 +493,11 @@ useEffect(() => {
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
                 <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 bg-linear-to-br from-emerald-800 to-emerald-950 rounded-2xl p-6 text-white shadow-md flex flex-col justify-between border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"><div>
-                            <span className="bg-emerald-700/50 text-emerald-200 text-xs px-2.5 py-1 rounded-full font-medium border border-emerald-600/30">Dashboard EcoFeast</span>
-                            <h1 className="text-2xl sm:text-3xl font-bold mt-3 leading-tight">Dapur Minim Sampah, Bumi Lebih Sehat.</h1>
-                            <p className="text-emerald-100/80 text-sm mt-2 max-w-xl">Ayo cegah penumpukan sampah makanan di TPA dengan memantau kedaluwarsa bahan masakan secara cerdas bersama AI.</p>
-                        </div>
+                    <div className="lg:col-span-2 bg-linear-to-br from-emerald-800 to-emerald-950 rounded-2xl p-6 text-white shadow-md flex flex-col justify-between border-slate-200 shadow-sm transition-all duration-300 hover:border-emerald-500 hover:ring-4 hover:ring-emerald-200 hover:shadow-[0_0_30px_rgba(16,185,129,0.30)] hover:-translate-y-1"><div>
+                        <span className="bg-emerald-700/50 text-emerald-200 text-xs px-2.5 py-1 rounded-full font-medium border border-emerald-600/30">Dashboard EcoFeast</span>
+                        <h1 className="text-2xl sm:text-3xl font-bold mt-3 leading-tight">Dapur Minim Sampah, Bumi Lebih Sehat.</h1>
+                        <p className="text-emerald-100/80 text-sm mt-2 max-w-xl">Ayo cegah penumpukan sampah makanan di TPA dengan memantau kedaluwarsa bahan masakan secara cerdas bersama AI.</p>
+                    </div>
                         <div className="mt-6 flex gap-6 border-t border-emerald-700/40 pt-4">
                             <div>
                                 <span className="text-xs text-emerald-200/70 block">CO₂ Diselamatkan</span>
@@ -562,7 +510,7 @@ useEffect(() => {
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-2xl p-6 shadow-sm flex flex-col justify-between border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100">
+                    <div className="bg-white rounded-2xl p-6 shadow-sm flex flex-col justify-between border-slate-200 shadow-sm transition-all duration-300 hover:border-emerald-500 hover:ring-4 hover:ring-emerald-200 hover:shadow-[0_0_30px_rgba(16,185,129,0.30)] hover:-translate-y-1">
                         <h3 className="text-sm font-bold text-slate-900  transition-all">Grafik Pengolahan Sampah</h3>
 
                         <div className="flex items-end justify-center gap-6 h-32 my-4 border-b border-slate-100 pb-1">
@@ -597,7 +545,7 @@ useEffect(() => {
 
                         <section
                             id="inventaris"
-                            className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                            className="bg-white rounded-2xl p-6 shadow-sm border-slate-200 shadow-sm transition-all duration-300 hover:border-emerald-500 hover:ring-4 hover:ring-emerald-200 hover:shadow-[0_0_30px_rgba(16,185,129,0.30)] hover:-translate-y-1"
                         >
                             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-6">
                                 <div>
@@ -664,7 +612,7 @@ useEffect(() => {
 
                         <section
                             id="resep"
-                            className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                            className="bg-white rounded-2xl p-6 shadow-sm border-slate-200 shadow-sm transition-all duration-300 hover:border-emerald-500 hover:ring-4 hover:ring-emerald-200 hover:shadow-[0_0_30px_rgba(16,185,129,0.30)] hover:-translate-y-1"
                         >
                             <h2 className="text-lg font-bold text-slate-900 mb-1">Asisten Memasak AI EcoFeast</h2>
                             <p className="text-xs text-slate-500 mb-4">Sistem AI akan menyusun resep kreatif demi menekan potensi limbah makanan terbuang.</p>
@@ -767,9 +715,9 @@ useEffect(() => {
                     </div>
 
                     <div className="lg:col-span-1">
-                        <section 
-                            id="waste" 
-                            className="bg-white rounded-2xl p-6 shadow-sm sticky top-24 border border-slate-200 duration-200 hover:border-green-400 focus:outline-none focus:ring-4 focus:ring-green-250 focus:border-green-100"
+                        <section
+                            id="waste"
+                            className="bg-white rounded-2xl p-6 shadow-sm sticky top-24 border-slate-200 shadow-sm transition-all duration-300 hover:border-emerald-500 hover:ring-4 hover:ring-emerald-200 hover:shadow-[0_0_30px_rgba(16,185,129,0.30)] hover:-translate-y-1"
                         >
                             <div className="w-10 h-10 bg-amber-50 border border-amber-200 text-amber-600 rounded-xl flex items-center justify-center text-lg mb-3 shadow-sm animate-bounce">♻️</div>
                             <h2 className="text-lg font-bold text-slate-900">Pemilah Sampah Rumah Tangga</h2>
@@ -789,14 +737,14 @@ useEffect(() => {
                                     className={`
                                         group relative w-full overflow-hidden rounded-xl py-3 px-4 font-semibold text-white transition-all duration-300
                                         ${isClassifyingWaste
-                                        ? "bg-slate-500 cursor-not-allowed"
-                                        : "bg-gradient-to-r from-slate-800 via-slate-900 to-black hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(15,23,42,0.35)] active:scale-95"
+                                            ? "bg-slate-500 cursor-not-allowed"
+                                            : "bg-gradient-to-r from-slate-800 via-slate-900 to-black hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(15,23,42,0.35)] active:scale-95"
                                         }
                                     `}
-                                    >
+                                >
 
                                     {!isClassifyingWaste && (
-                                        <span className="absolute inset-0-translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent group-hover:translate-x-full transition-transform duration-700"/>
+                                        <span className="absolute inset-0-translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent group-hover:translate-x-full transition-transform duration-700" />
                                     )}
 
                                     <span className="relative flex items-center justify-center gap-3">

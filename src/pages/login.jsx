@@ -6,6 +6,8 @@ import { signInWithPopup } from "firebase/auth";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { motion } from "framer-motion";
+import { image } from "framer-motion/client";
+import logo from "../assets/logo.png";
 
 
 export default function Login() {
@@ -26,7 +28,7 @@ export default function Login() {
     const handleChange = (e) => {
         setFormData({
             ...formData,
-            [e.target.name]: e.target.value, 
+            [e.target.name]: e.target.value,
         });
     };
 
@@ -165,6 +167,15 @@ export default function Login() {
                         </p>
                     </div>
 
+                    {/* GAMBAR DI TENGAH */}
+                    <div className="flex justify-center my-8">
+
+                        <img
+                            src={logo}
+                            alt="EcoFeast"
+                          className="w-64 h-64 object-contain drop-shadow-2xl transition-all duration-500 hover:scale-110"/>
+                    </div>
+
                     <div className="space-y-6">
                         <div className="flex items-center gap-4">
                             <Recycle className="w-10 h-10 animate-bounce" />
@@ -191,7 +202,7 @@ export default function Login() {
 
                 <motion.div initial={{ opacity: 0, x: 80 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8 }} className="p-10 lg:p-14">
 
-                    <h2 className="text-4xl font-bold text-slate-1000 bg-gradient-to-r from-green-700 to-emerald-500 bg-clip-text text-transparent">
+                    <h2 className="text-4xl font-bold leading-tight pb-1 bg-gradient-to-r from-green-700 to-emerald-500 bg-clip-text text-transparent">
                         Selamat Datang
                     </h2>
 
@@ -270,13 +281,13 @@ export default function Login() {
                                     type="checkbox"
                                     className="accent-green-600"
                                     checked={rememberMe}
-                                    onChange={handleRememberMeChange}/>
+                                    onChange={handleRememberMeChange} />
                                 Ingat saya
                             </label>
 
                             <button
                                 type="button"
-                                className="text-green-600 hover:underline"
+                                className="relative text-slate-600 hover:text-emerald-600 transition after:absolute after:left-0 after:-bottom-1 after:h-[2px] after:w-0 after:bg-emerald-500 after:transition-all hover:after:w-full"
                                 onClick={handleForgotPassword}>
                                 Lupa Password?
                             </button>
